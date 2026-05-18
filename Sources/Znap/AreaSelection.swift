@@ -1,5 +1,20 @@
 import AppKit
 
+/// Borderless overlay window that refuses AppKit's automatic frame constraint.
+///
+/// macOS calls `constrainFrameRect(_:to:)` on every window to keep it within the
+/// "usable" bounds of a screen (below menu bar, above Dock, etc.). For a full-screen
+/// selection overlay we want to cover the *entire* screen — including menu bar and
+/// Dock — on every display. Without this override, the overlay on secondary
+/// displays gets silently clipped to a fraction of the actual screen.
+final class OverlayWindow: NSWindow {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
 @MainActor
 final class AreaSelectionController {
     private var windows: [NSWindow] = []
@@ -18,11 +33,11 @@ final class AreaSelectionController {
         NSApp.activate(ignoringOtherApps: true)
 
         for screen in NSScreen.screens {
-            let w = NSWindow(contentRect: screen.frame,
-                             styleMask: .borderless,
-                             backing: .buffered,
-                             defer: false,
-                             screen: screen)
+            let w = OverlayWindow(contentRect: screen.frame,
+                                  styleMask: .borderless,
+                                  backing: .buffered,
+                                  defer: false,
+                                  screen: screen)
             w.isOpaque = false
             w.backgroundColor = .clear
             w.level = .screenSaver
@@ -32,10 +47,16 @@ final class AreaSelectionController {
             w.acceptsMouseMovedEvents = true
 
             let view = AreaSelectionView(frame: NSRect(origin: .zero, size: screen.frame.size))
+            view.autoresizingMask = [.width, .height]
             view.screenOrigin = screen.frame.origin
             view.onComplete = { [weak self] rect in self?.finish(rect) }
             view.onCancel = { [weak self] in self?.finish(nil) }
             w.contentView = view
+
+            // Force the frame after creation in case anything (display arrangement
+            // change, Stage Manager, etc.) tries to renegotiate the size.
+            w.setFrame(screen.frame, display: true)
+
             w.makeKeyAndOrderFront(nil)
             w.makeFirstResponder(view)
             windows.append(w)

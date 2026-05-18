@@ -36,20 +36,32 @@ fi
 echo "==> Ad-hoc signing…"
 codesign --force --sign - --timestamp=none "$APP"
 
-echo "==> Installing to ~/Applications…"
-INSTALL_DIR="$HOME/Applications"
-mkdir -p "$INSTALL_DIR"
-rm -rf "$INSTALL_DIR/$APP_NAME.app"
+# Install to /Applications by default (the system-wide Applications folder).
+# Override with: INSTALL_DIR=~/Applications ./build.sh
+INSTALL_DIR="${INSTALL_DIR:-/Applications}"
+DEST="$INSTALL_DIR/$APP_NAME.app"
+
+# /Applications is owned by root; use sudo only when we don't have write access.
+if [ -w "$INSTALL_DIR" ]; then
+    SUDO=""
+else
+    SUDO="sudo"
+    echo "==> Installing to ${INSTALL_DIR} (requires admin password)…"
+fi
+
+[ -z "$SUDO" ] && echo "==> Installing to ${INSTALL_DIR}…"
+$SUDO mkdir -p "$INSTALL_DIR"
+$SUDO rm -rf "$DEST"
 # Preserve the signature from the build copy — DON'T re-sign here.
-cp -R "$APP" "$INSTALL_DIR/$APP_NAME.app"
-/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister \
-    -f "$INSTALL_DIR/$APP_NAME.app" 2>/dev/null || true
-mdimport "$INSTALL_DIR/$APP_NAME.app" 2>/dev/null || true
+$SUDO cp -R "$APP" "$DEST"
+$SUDO /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister \
+    -f "$DEST" 2>/dev/null || true
+mdimport "$DEST" 2>/dev/null || true
 
 echo
 echo "Built:     $APP"
-echo "Installed: $INSTALL_DIR/$APP_NAME.app  (searchable in Spotlight as \"Znap\")"
-echo "Run with:  open \"$INSTALL_DIR/$APP_NAME.app\""
+echo "Installed: $DEST  (searchable in Spotlight as \"Znap\")"
+echo "Run with:  open \"$DEST\""
 echo
 echo "First launch: macOS will prompt for Screen Recording permission."
 echo "Grant it in System Settings → Privacy & Security → Screen Recording,"
