@@ -81,8 +81,18 @@ final class RecordingManager: NSObject, @unchecked Sendable {
         }
     }
 
+    /// Path in a Znap-owned temp folder. We write here while recording, then the
+    /// preview panel either moves the file to the Desktop (Save) or deletes it (Discard).
+    private static func tempRecordingURL() -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("Znap", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        return dir.appendingPathComponent("Znap Recording \(f.string(from: Date())).mov")
+    }
+
     private func start(filter: SCContentFilter, config: SCStreamConfiguration) async throws {
-        let url = SaveLocation.newURL(prefix: "Znap Recording", ext: "mov")
+        let url = RecordingManager.tempRecordingURL()
         try? FileManager.default.removeItem(at: url)
 
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
@@ -102,27 +112,48 @@ final class RecordingManager: NSObject, @unchecked Sendable {
         let stream = SCStream(filter: filter, configuration: config, delegate: nil)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
 
-        lock.lock()
-        self.stream = stream
-        self.assetWriter = writer
-        self.videoInput = input
-        self.outputURL = url
-        self.sessionStarted = false
-        lock.unlock()
+        installSession(stream: stream, writer: writer, input: input, url: url)
 
         try await stream.startCapture()
 
         DispatchQueue.main.async { [weak self] in self?.onStateChange?(true) }
     }
 
-    func stop() async {
-        lock.lock()
+    /// Synchronous helpers around the lock — NSLock cannot be held across an
+    /// `await`, so we keep critical sections inside non-async methods and the
+    /// async `stop()` just orchestrates them.
+    private func installSession(stream: SCStream,
+                                writer: AVAssetWriter,
+                                input: AVAssetWriterInput,
+                                url: URL) {
+        lock.lock(); defer { lock.unlock() }
+        self.stream = stream
+        self.assetWriter = writer
+        self.videoInput = input
+        self.outputURL = url
+        self.sessionStarted = false
+    }
+
+    private func takeSessionForStop() -> (SCStream?, AVAssetWriter?, AVAssetWriterInput?, URL?) {
+        lock.lock(); defer { lock.unlock() }
         let s = stream
-        let writer = assetWriter
-        let input = videoInput
-        let url = outputURL
+        let w = assetWriter
+        let i = videoInput
+        let u = outputURL
         stream = nil
-        lock.unlock()
+        return (s, w, i, u)
+    }
+
+    private func clearSessionAfterStop() {
+        lock.lock(); defer { lock.unlock() }
+        assetWriter = nil
+        videoInput = nil
+        outputURL = nil
+        sessionStarted = false
+    }
+
+    func stop() async {
+        let (s, writer, input, url) = takeSessionForStop()
 
         guard let s else { return }
 
@@ -135,17 +166,13 @@ final class RecordingManager: NSObject, @unchecked Sendable {
             writer?.cancelWriting()
         }
 
-        lock.lock()
-        assetWriter = nil
-        videoInput = nil
-        outputURL = nil
-        sessionStarted = false
-        lock.unlock()
+        clearSessionAfterStop()
 
         await MainActor.run { [weak self] in
             self?.onStateChange?(false)
             if let url, FileManager.default.fileExists(atPath: url.path) {
-                NSWorkspace.shared.activateFileViewerSelecting([url])
+                // Show the preview panel — file stays in temp until user picks Save or Discard.
+                VideoPreviewPanelController.show(tempURL: url)
             }
         }
     }

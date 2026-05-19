@@ -4,8 +4,12 @@ import AppKit
 final class PreviewPanelController {
     private static var openPanels: [PreviewPanelController] = []
 
-    private let image: CGImage
+    /// Mutable so the editor can swap in an annotated version.
+    private var image: CGImage
     private var panel: NSPanel?
+    private var imageView: NSImageView?
+    private var copyButton: GlassIconButton?
+    private var editor: EditorWindowController?
     private var stackIndex: Int = 0
 
     static func show(image: CGImage) {
@@ -20,7 +24,7 @@ final class PreviewPanelController {
     }
 
     private func present() {
-        let maxDim: CGFloat = 280
+        let maxDim: CGFloat = 200
         let imgW = CGFloat(image.width)
         let imgH = CGFloat(image.height)
         let ratio = imgW / imgH
@@ -35,10 +39,10 @@ final class PreviewPanelController {
             w = maxDim * ratio
         }
 
-        let bottomBar: CGFloat = 44
-        let padding: CGFloat = 8
-        let panelW = w + padding * 2
-        let panelH = h + bottomBar + padding
+        let pad = Theme.panelPadding
+        let bottomBar = Theme.bottomBarHeight
+        let panelW = w + pad * 2
+        let panelH = h + bottomBar + pad * 2
 
         guard let screen = NSScreen.main else { return }
         let originX = screen.visibleFrame.minX + 20
@@ -58,51 +62,53 @@ final class PreviewPanelController {
         panel.isMovableByWindowBackground = true
         panel.hidesOnDeactivate = false
 
-        // Container with rounded corners + subtle border.
-        let container = NSView(frame: NSRect(origin: .zero,
-                                             size: NSSize(width: panelW, height: panelH)))
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 12
-        container.layer?.masksToBounds = true
-        container.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        container.layer?.borderWidth = 1
-        container.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
+        let (container, content) = Theme.makeGlassContainer(
+            size: NSSize(width: panelW, height: panelH))
 
-        // Image
-        let imageView = NSImageView(frame: NSRect(x: padding, y: bottomBar,
-                                                  width: w, height: h))
-        imageView.image = NSImage(cgImage: image, size: NSSize(width: imgW, height: imgH))
-        imageView.imageScaling = .scaleProportionallyUpOrDown
-        imageView.wantsLayer = true
-        imageView.layer?.cornerRadius = 6
-        imageView.layer?.masksToBounds = true
-        container.addSubview(imageView)
+        // Image thumbnail
+        let iv = NSImageView(frame: NSRect(x: pad, y: bottomBar + pad,
+                                           width: w, height: h))
+        iv.image = NSImage(cgImage: image, size: NSSize(width: imgW, height: imgH))
+        iv.imageScaling = .scaleProportionallyUpOrDown
+        iv.wantsLayer = true
+        iv.layer?.cornerRadius = Theme.thumbnailCornerRadius
+        iv.layer?.cornerCurve = .continuous
+        iv.layer?.masksToBounds = true
+        content.addSubview(iv)
+        self.imageView = iv
 
-        // Buttons
-        let btnH: CGFloat = 26
-        let gap: CGFloat = 8
-        let btnW: CGFloat = (panelW - padding * 2 - gap * 2) / 3
-        let btnY: CGFloat = (bottomBar - btnH) / 2
+        // Bottom: 4 icon-only buttons centered horizontally.
+        let btnSize = Theme.iconButtonSize
+        let btnGap = Theme.iconButtonGap
+        let totalBtnW = btnSize * 4 + btnGap * 3
+        let startX = (panelW - totalBtnW) / 2
+        let btnY = (bottomBar - btnSize) / 2
 
-        let copyBtn = makeButton(title: "Copy",
-                                 symbol: "doc.on.doc",
-                                 selector: #selector(copyImage),
-                                 frame: NSRect(x: padding, y: btnY, width: btnW, height: btnH))
-        let saveBtn = makeButton(title: "Save",
-                                 symbol: "square.and.arrow.down",
-                                 selector: #selector(saveImage),
-                                 frame: NSRect(x: padding + btnW + gap, y: btnY, width: btnW, height: btnH))
-        let closeBtn = makeButton(title: "Close",
-                                  symbol: "xmark",
-                                  selector: #selector(closeTapped),
-                                  frame: NSRect(x: padding + (btnW + gap) * 2,
-                                                y: btnY, width: btnW, height: btnH))
-        saveBtn.bezelColor = .controlAccentColor
+        let editBtn = Theme.iconButton(
+            symbol: "pencil.tip.crop.circle",
+            tooltip: "Edit",
+            target: self, action: #selector(editTapped))
+        let copyBtn = Theme.iconButton(
+            symbol: "doc.on.doc",
+            tooltip: "Copy",
+            target: self, action: #selector(copyImage))
+        let saveBtn = Theme.primaryIconButton(
+            symbol: "square.and.arrow.down",
+            tooltip: "Save",
+            target: self, action: #selector(saveImage))
         saveBtn.keyEquivalent = "\r"
+        let closeBtn = Theme.iconButton(
+            symbol: "xmark",
+            tooltip: "Close",
+            target: self, action: #selector(closeTapped))
 
-        container.addSubview(copyBtn)
-        container.addSubview(saveBtn)
-        container.addSubview(closeBtn)
+        let buttons: [NSButton] = [editBtn, copyBtn, saveBtn, closeBtn]
+        for (i, b) in buttons.enumerated() {
+            b.frame = NSRect(x: startX + CGFloat(i) * (btnSize + btnGap),
+                             y: btnY, width: btnSize, height: btnSize)
+            content.addSubview(b)
+        }
+        self.copyButton = copyBtn
 
         panel.contentView = container
         panel.alphaValue = 0
@@ -110,22 +116,33 @@ final class PreviewPanelController {
         self.panel = panel
 
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.18
+            ctx.duration = 0.2
             panel.animator().alphaValue = 1
         }
     }
 
-    private func makeButton(title: String, symbol: String, selector: Selector, frame: NSRect) -> NSButton {
-        let b = NSButton(frame: frame)
-        b.title = " " + title
-        b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        b.imagePosition = .imageLeft
-        b.bezelStyle = .rounded
-        b.controlSize = .small
-        b.font = .systemFont(ofSize: 12, weight: .medium)
-        b.target = self
-        b.action = selector
-        return b
+    @objc private func editTapped() {
+        // Hide while editing so the editor window has full focus.
+        panel?.orderOut(nil)
+        editor = EditorWindowController(
+            image: image,
+            onDone: { [weak self] edited in
+                guard let self else { return }
+                self.image = edited
+                self.imageView?.image = NSImage(
+                    cgImage: edited,
+                    size: NSSize(width: edited.width, height: edited.height)
+                )
+                self.editor = nil
+                self.panel?.orderFront(nil)
+            },
+            onCancel: { [weak self] in
+                guard let self else { return }
+                self.editor = nil
+                self.panel?.orderFront(nil)
+            }
+        )
+        editor?.show()
     }
 
     @objc private func copyImage() {
@@ -134,7 +151,7 @@ final class PreviewPanelController {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.writeObjects([nsImage])
-        flashButtonTitle("Copied")
+        flashCopyFeedback()
     }
 
     @objc private func saveImage() {
@@ -155,18 +172,14 @@ final class PreviewPanelController {
         dismiss()
     }
 
-    private func flashButtonTitle(_ text: String) {
-        guard let container = panel?.contentView else { return }
-        for case let btn as NSButton in container.subviews where btn.action == #selector(copyImage) {
-            let originalTitle = btn.title
-            let originalImage = btn.image
-            btn.title = " " + text
-            btn.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak btn] in
-                btn?.title = originalTitle
-                btn?.image = originalImage
-            }
-            break
+    private func flashCopyFeedback() {
+        guard let btn = copyButton else { return }
+        let originalImage = btn.image
+        btn.image = NSImage(systemSymbolName: "checkmark",
+                            accessibilityDescription: "Copied")?
+            .withSymbolConfiguration(.init(pointSize: 12, weight: .semibold))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak btn] in
+            btn?.image = originalImage
         }
     }
 

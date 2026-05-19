@@ -6,6 +6,14 @@ import UniformTypeIdentifiers
 final class CaptureManager {
     private let areaSelector = AreaSelectionController()
     private let windowPicker = WindowPickerController()
+    private let scrollingCapture = ScrollingCaptureController()
+
+    /// Start a scrolling capture session. The user selects an area, scrolls the
+    /// content manually, and clicks Stop on the indicator panel — the result is
+    /// stitched into a single tall image and shown in the preview panel.
+    func captureScrolling() async {
+        await scrollingCapture.start()
+    }
 
     func captureFullScreen() async {
         do {
@@ -48,6 +56,42 @@ final class CaptureManager {
             present(image)
         } catch {
             showError(error, context: "Area capture failed")
+        }
+    }
+
+    /// Capture an area and run Vision OCR on the result. Shows a panel with the
+    /// recognized text and auto-copies it to the clipboard.
+    func captureText() async {
+        guard let rect = await areaSelector.selectArea() else { return }
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(
+                false, onScreenWindowsOnly: true)
+            guard let (display, screen) = displayFor(rect: rect, in: content.displays) else { return }
+
+            let source = toDisplayLocal(globalRect: rect, screen: screen)
+            let filter = SCContentFilter(display: display, excludingWindows: [])
+            let config = SCStreamConfiguration()
+            config.sourceRect = source
+            let scale = screen.backingScaleFactor
+            config.width = max(2, Int((source.width * scale).rounded()))
+            config.height = max(2, Int((source.height * scale).rounded()))
+            config.showsCursor = false
+
+            let image = try await SCScreenshotManager.captureImage(
+                contentFilter: filter, configuration: config)
+
+            playShutter()
+            let text = await OCR.recognize(in: image)
+
+            // Auto-copy when text was found, so the user can paste immediately.
+            if !text.isEmpty {
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(text, forType: .string)
+            }
+            OCRPanelController.show(text: text, thumbnail: image)
+        } catch {
+            showError(error, context: "Text capture failed")
         }
     }
 

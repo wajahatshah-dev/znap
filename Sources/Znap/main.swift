@@ -1,4 +1,10 @@
 import AppKit
+import Carbon.HIToolbox
+
+/// `⌃⌥⌘` — control + option + command. Rarely used by other macOS apps, so it
+/// makes a safe modifier set for system-wide hotkeys.
+private let hyperCarbon = controlKey | optionKey | cmdKey
+private let hyperCocoa: NSEvent.ModifierFlags = [.control, .option, .command]
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -8,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let capture = CaptureManager()
     let recording = RecordingManager()
     let welcome = WelcomeWindowController()
+    private let hotKeys = HotKeyManager()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -16,6 +23,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in self?.updateForRecording(isRecording) }
         }
         welcome.showIfFirstLaunch()
+        registerGlobalHotKeys()
+    }
+
+    /// Wire each menu action to a global hotkey so it works from any app.
+    /// The same shortcut appears next to its menu item, so users can discover it.
+    private func registerGlobalHotKeys() {
+        hotKeys.register(keyCode: kVK_ANSI_A, modifiers: hyperCarbon) { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in await self.capture.captureArea() }
+        }
+        hotKeys.register(keyCode: kVK_ANSI_T, modifiers: hyperCarbon) { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in await self.capture.captureText() }
+        }
+        hotKeys.register(keyCode: kVK_ANSI_F, modifiers: hyperCarbon) { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in await self.capture.captureFullScreen() }
+        }
+        hotKeys.register(keyCode: kVK_ANSI_W, modifiers: hyperCarbon) { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in await self.capture.captureWindow() }
+        }
+        hotKeys.register(keyCode: kVK_ANSI_L, modifiers: hyperCarbon) { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in await self.capture.captureScrolling() }
+        }
+        hotKeys.register(keyCode: kVK_ANSI_R, modifiers: hyperCarbon) { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in await self.recording.recordArea() }
+        }
+        hotKeys.register(keyCode: kVK_ANSI_V, modifiers: hyperCarbon) { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in await self.recording.recordWindow() }
+        }
+        hotKeys.register(keyCode: kVK_ANSI_Period, modifiers: hyperCarbon) { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in await self.recording.stop() }
+        }
     }
 
     private func buildStatusItem() {
@@ -28,15 +73,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.autoenablesItems = false
 
         menu.addItem(header("Capture"))
-        menu.addItem(item("Capture Area",         #selector(captureArea),       key: "1"))
-        menu.addItem(item("Capture Full Screen",  #selector(captureFullScreen), key: "3"))
-        menu.addItem(item("Capture Window",       #selector(captureWindow),     key: "4"))
+        menu.addItem(item("Capture Area",         #selector(captureArea),       key: "a", modifiers: hyperCocoa))
+        menu.addItem(item("Capture Text (OCR)",   #selector(captureText),       key: "t", modifiers: hyperCocoa))
+        menu.addItem(item("Capture Full Screen",  #selector(captureFullScreen), key: "f", modifiers: hyperCocoa))
+        menu.addItem(item("Capture Window",       #selector(captureWindow),     key: "w", modifiers: hyperCocoa))
+        menu.addItem(item("Capture Scrolling…",   #selector(captureScrolling),  key: "l", modifiers: hyperCocoa))
 
         menu.addItem(.separator())
         menu.addItem(header("Record"))
-        menu.addItem(item("Record Area",   #selector(recordArea),   key: "5"))
-        menu.addItem(item("Record Window", #selector(recordWindow), key: "6"))
-        stopItem = item("Stop Recording", #selector(stopRecording), key: "s")
+        menu.addItem(item("Record Area",   #selector(recordArea),   key: "r", modifiers: hyperCocoa))
+        menu.addItem(item("Record Window", #selector(recordWindow), key: "v", modifiers: hyperCocoa))
+        stopItem = item("Stop Recording", #selector(stopRecording), key: ".", modifiers: hyperCocoa)
         stopItem.isEnabled = false
         menu.addItem(stopItem)
 
@@ -54,8 +101,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return i
     }
 
-    private func item(_ title: String, _ action: Selector, key: String) -> NSMenuItem {
+    private func item(_ title: String, _ action: Selector, key: String,
+                      modifiers: NSEvent.ModifierFlags = .command) -> NSMenuItem {
         let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        i.keyEquivalentModifierMask = modifiers
         i.target = self
         return i
     }
@@ -90,8 +139,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func captureArea()       { Task { await capture.captureArea() } }
+    @objc private func captureText()       { Task { await capture.captureText() } }
     @objc private func captureFullScreen() { Task { await capture.captureFullScreen() } }
     @objc private func captureWindow()     { Task { await capture.captureWindow() } }
+    @objc private func captureScrolling()  { Task { await capture.captureScrolling() } }
     @objc private func recordArea()        { Task { await recording.recordArea() } }
     @objc private func recordWindow()      { Task { await recording.recordWindow() } }
     @objc private func stopRecording()     { Task { await recording.stop() } }
