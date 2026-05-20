@@ -82,7 +82,7 @@ final class ScrollingCaptureController {
         captureTask = Task { [weak self] in
             while let self, !Task.isCancelled, self.isCapturing {
                 await self.captureOnce()
-                try? await Task.sleep(nanoseconds: 350_000_000)
+                try? await Task.sleep(nanoseconds: 200_000_000)
             }
         }
     }
@@ -109,18 +109,23 @@ final class ScrollingCaptureController {
             return
         }
 
-        guard let dy = verticalOffset(reference: prev, floating: newFrame) else { return }
+        guard let ty = verticalOffset(reference: prev, floating: newFrame) else { return }
 
-        // Vision uses bottom-left origin. If the user scrolled down, content
-        // moved up on screen, so the floating frame needs translation `ty > 0`
-        // to align with the reference. Negative or near-zero offsets mean no
-        // meaningful new content was revealed.
-        let intDy = Int(dy.rounded())
+        // Vision returns the translation needed to align the *floating* (new)
+        // frame onto the *reference* (previous) frame, in bottom-left pixel
+        // coords. When the user scrolls DOWN by N pixels, the new frame shows
+        // content from N pixels lower on the page; aligning it back onto the
+        // previous frame requires shifting it DOWN — so `ty` comes back as
+        // `-N` (negative). The actual scroll distance in screen pixels is `-ty`.
+        let scrollPx = -ty
+        let intDy = Int(scrollPx.rounded())
+
+        // Skip frames that didn't scroll (intDy <= 1) or scrolled past the full
+        // viewport (intDy >= height — Vision can't find overlap anyway).
         guard intDy > 1 && intDy < newFrame.height else { return }
 
         // The bottom `intDy` rows of the new frame are the freshly-revealed
-        // content. Crop them (CGImage uses top-left origin, so "bottom rows" are
-        // at high Y indices).
+        // content. CGImage uses top-left origin, so "bottom rows" are at high Y.
         guard let newContent = newFrame.cropping(to: CGRect(
             x: 0, y: newFrame.height - intDy,
             width: newFrame.width, height: intDy
