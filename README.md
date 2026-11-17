@@ -37,7 +37,7 @@
 Clone the repo and run the build script:
 
 ```bash
-git clone https://github.com/<your-username>/znap.git
+git clone https://github.com/wajahatshah-dev/znap.git
 cd znap
 ./build.sh
 ```
